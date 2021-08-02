@@ -1,4 +1,4 @@
 from .api import Withings
-from .api import WithingsAUTH
-from .callback import Oath2CallbackServer
+from .oauth2 import WithingsAUTH
+from .oauth2 import Oath2CallbackServer
 from .variables import MEAS_CODES
