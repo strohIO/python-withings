@@ -9,7 +9,7 @@ import sys
 import requests
 from requests_oauthlib import OAuth2Session
 
-from .variables import MEAS_CODES
+from .variables import MeasureType, SleepState
 
 
 
@@ -149,7 +149,7 @@ class Withings:
         hdrs = self.headers
 
         if type_name:
-            hdrs['type'] = str(MEAS_CODES[type_name])
+            hdrs['type'] = str(MeasureType(type_name).code)
 
         response = self.client.get('https://wbsapi.withings.net/measure',
                                    headers=hdrs,
@@ -160,7 +160,8 @@ class Withings:
         # Replace type-codes with type-names
         for record in measurements['body']['measuregrps']:
             for measure in record['measures']:
-                measure['type'] = MEAS_CODES.inverse[measure['type']]
+                # print(measure['type'])
+                measure['type'] = MeasureType(measure['type']).value
                 # 'algo', 'fm', 'type', 'unit', 'value'
 
         # pprint(measurements['body']['measuregrps'][0])
@@ -194,7 +195,10 @@ class Withings:
             pprint(response.text)
             return []
 
-        return response.json()['body']['series']
+        for sleep in results['body']['series']:
+            sleep['state'] = SleepState(sleep['state']).value
+
+        return results['body']['series']
 
 
     def get_sleep_detail_data(self, 
