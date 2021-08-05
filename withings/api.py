@@ -5,11 +5,13 @@ from functools import partialmethod
 import json
 from pprint import pprint
 import sys
+from threading import Event
+from threading import Lock
 
-import requests
+from oauthlib.oauth2.rfc6749.errors import MissingTokenError
 from requests_oauthlib import OAuth2Session
 
-from .variables import MeasureType, SleepState
+from .codes import MeasureType, SleepState
 
 
 
@@ -37,6 +39,9 @@ class WithingsOath2Client:
         self.refresh_token = refresh_token
         self.expires_at = expires_at
 
+        self.refresh_lock = Lock()
+        self.refresh_event = Event()
+
         self.session = OAuth2Session(client_id=self.client_id,
                                      auto_refresh_url='https://account.withings.com/oauth2/token',
                                      auto_refresh_kwargs={
@@ -48,34 +53,55 @@ class WithingsOath2Client:
                                      scope='user.info,user.metrics,user.activity')
 
 
-    def fetch_access_token(self):
-        '''
-        After this point, the contents of the response dict are saved in session
-         as an oauthlib.OAuth2Token object.
+    def fetch_access_token(self, refresh=False):
+        '''After this point, the contents of the response dict are saved in session
+        as an oauthlib.OAuth2Token object.
         session.token accesses the object, while session.access_token gets just
-         the string of latest access token.
+        the string of latest access token.
         '''
+
+        if not self.refresh_lock.acquire(blocking=False):
+            print("WAITING ON ANOTHER THREAD TO REFRESH ACCESS TOKEN.")
+            self.refresh_event.wait()
+            return
+        # self.refresh_event.clear()
 
         print("FETCHING ACCESS TICKET")
 
-        response = self.session.fetch_token('https://account.withings.com/oauth2/token',
-                                            include_client_id=True,
-                                            client_secret=self.client_secret,
-                                            code=self.auth_code,
-                                            action="requesttoken")
+        try:
+            fetch_token_url = 'https://account.withings.com/oauth2/token'
 
-        self.expires_at= response['expires_at']
+            if not refresh:
+                response = self.session.fetch_token(fetch_token_url,
+                                                    include_client_id=True,
+                                                    client_secret=self.client_secret,
+                                                    code=self.auth_code,
+                                                    action="requesttoken")
 
-        return response
+                # After this point, the contents of the response dict are saved in session
+                # as an oauthlib.OAuth2Token object.
+                # session.token accesses the object, while session.access_token gets just
+                # the string of latest access token.
 
+            else:
+                response = self.session.refresh_token(fetch_token_url)
+            
+            self.access_token = response['access_token']
+            self.refresh_token = response['refresh_token']
+            self.expires_at= response['expires_at']
+            
+            print("TOKEN AUTHENTICATED")
 
-    def fetch_fresh_ticket(self):
+        except MissingTokenError as err:
+            # Does this still happen?
+            pprint("MissingTokenError raised.")
+            print(err)
+            raise
 
-        print("REFRESHING TICKET")
-
-        response = self.session.refresh_token('https://account.withings.com/oauth2/token')
-
-        self.expires_at= response['expires_at']
+        finally:
+            self.refresh_event.set()
+            self.refresh_event.clear()
+            self.refresh_lock.release()
 
         return response
 
@@ -89,7 +115,7 @@ class WithingsOath2Client:
 
         if not self.expires_at:# and self.expires_at - datetime.now() < 0:
             print("NO EXPIRES AT")
-            self.fetch_fresh_ticket()
+            self.fetch_access_token(refresh=True)
         
         response = self.session.request(method, url, **kwargs)
 
@@ -97,7 +123,7 @@ class WithingsOath2Client:
         if response.status_code == 401:
             d = json.loads(response.content.decode('utf8'))
             if d['errors'][0]['errorType'] == 'expired_token':
-                self.fetch_fresh_ticket()
+                self.fetch_access_token(refresh=True)
                 response = self.session.request(method, url, **kwargs)
 
         return response
@@ -142,7 +168,15 @@ class Withings:
         return results['body']['devices']
 
 
-    def get_measurements(self, type_name: str):
+    def get_measurements(self, type_name):
+        """Fetches measurements.
+
+        Parameters
+        ----------
+        type_name : str, int, MeasureType
+            The string value, or integer code of the MeasureType, or
+            even the MeasureType enum itself.
+        """
 
         parms = { "action": "getmeas" }
 
@@ -197,7 +231,7 @@ class Withings:
 
         for sleep in results['body']['series']:
             sleep['state'] = SleepState(sleep['state']).value
-
+        
         return results['body']['series']
 
 
