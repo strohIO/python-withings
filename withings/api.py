@@ -3,15 +3,19 @@ from datetime import datetime
 from datetime import timedelta
 from functools import partialmethod
 import json
+from math import floor
 from pprint import pprint
 import sys
 from threading import Event
 from threading import Lock
 
+from dateutil.parser import parse
 from oauthlib.oauth2.rfc6749.errors import MissingTokenError
 from requests_oauthlib import OAuth2Session
 
 from .codes import MeasureType, SleepState
+from .exceptions import AuthenticationFailedException
+from .exceptions import raise_for_status as withings_raise_for_status
 
 
 
@@ -23,21 +27,39 @@ class WithingsOath2Client:
 
     def __init__(self, client_id, client_secret, callback_url,
                  auth_code=None, access_token=None, 
-                 refresh_token=None, expires_at=None):
+                 refresh_token=None, expires_at=None,
+                 token_updater=None):
 
         if not auth_code and not (access_token and refresh_token and expires_at):
             raise Exception("Either auth_code, or access_token & refresh_token & expires_at must be given.")
         elif auth_code and access_token and refresh_token:
             raise Exception("Only auth_code, or access_token & refresh_token must be given.")
 
-        self.client_id = client_id# or CLIENT_ID
-        self.client_secret = client_secret# or CLIENT_SECRET
+        self.client_id = client_id
+        self.client_secret = client_secret
 
         self.auth_code = auth_code
         self.callback_url = callback_url
         self.access_token = access_token
         self.refresh_token = refresh_token
-        self.expires_at = expires_at
+
+        # Handle setting expires_at value to float timestamp
+        try:
+            self.expires_at = floor(float(expires_at))
+        except ValueError as err:
+            if 'could not convert string to float' in str(err):
+                self.expires_at = parse(expires_at).timestamp()
+            else:
+                raise
+        except TypeError as err:
+            self.expires_at = expires_at
+
+        self._token_updater = token_updater or (lambda self,x: x)
+
+        token = {}
+        if access_token: token['access_token'] = access_token
+        if refresh_token: token['refresh_token'] = refresh_token
+        if expires_at: token['expires_at'] = self.expires_at
 
         self.refresh_lock = Lock()
         self.refresh_event = Event()
@@ -49,8 +71,10 @@ class WithingsOath2Client:
                                          "client_id": self.client_id,
                                          "client_secret": self.client_secret,
                                      },
+                                     token=token,
                                      redirect_uri=self.callback_url,
-                                     scope='user.info,user.metrics,user.activity')
+                                     scope='user.info,user.metrics,user.activity',
+                                     token_updater=self._token_updater)
 
 
     def fetch_access_token(self, refresh=False):
@@ -72,6 +96,8 @@ class WithingsOath2Client:
             fetch_token_url = 'https://account.withings.com/oauth2/token'
 
             if not refresh:
+                print("FETCHING ACCESS TICKET")
+
                 response = self.session.fetch_token(fetch_token_url,
                                                     include_client_id=True,
                                                     client_secret=self.client_secret,
@@ -84,11 +110,18 @@ class WithingsOath2Client:
                 # the string of latest access token.
 
             else:
+                print("REFRESHING ACCESS TICKET")
                 response = self.session.refresh_token(fetch_token_url)
-            
+
+            # Call token_updater callback function to save off new creds
+            if self._token_updater:
+                print("Handling new creds with token_updater callback")
+                self._token_updater(response)
+
+            # Take in new auth details
             self.access_token = response['access_token']
             self.refresh_token = response['refresh_token']
-            self.expires_at= response['expires_at']
+            self.expires_at= floor(response['expires_at'])
             
             print("TOKEN AUTHENTICATED")
 
@@ -113,18 +146,29 @@ class WithingsOath2Client:
             print("NO TOKEN YET")
             self.fetch_access_token()
 
-        if not self.expires_at:# and self.expires_at - datetime.now() < 0:
-            print("NO EXPIRES AT")
+        # if not self.expires_at:# and self.expires_at - datetime.now() < 0:
+        if self.expires_at \
+                and datetime.fromtimestamp(self.expires_at) < datetime.now():
+            print("Withings API token has expired")
             self.fetch_access_token(refresh=True)
-        
-        response = self.session.request(method, url, **kwargs)
 
-        # Check for ticket expiration response
-        if response.status_code == 401:
-            d = json.loads(response.content.decode('utf8'))
-            if d['errors'][0]['errorType'] == 'expired_token':
-                self.fetch_access_token(refresh=True)
-                response = self.session.request(method, url, **kwargs)
+        try:
+            response = self.session.request(method, url, **kwargs)
+            response.raise_for_status()
+            withings_raise_for_status(response)
+
+        # except oauthlib.oath2.TokenExpiredError as e:
+        # except requests.exceptions.HTTPError as err:
+        except AuthenticationFailedException as err:
+
+            content = json.loads(response.content.decode('utf8'))
+
+            if content['status'] == 401:
+                if 'The access token provided' in content['error']:
+                    self.fetch_access_token(refresh=True)
+                    response = self.session.request(method, url, **kwargs)
+                else:
+                    raise
 
         return response
 
@@ -139,11 +183,15 @@ class Withings:
     # Use refresh_token to get a new access_token after it expires.
 
 
-    def __init__(self, client_id, client_secret, callback_url, auth_code=None, access_token=None, refresh_token=None, expires_at=None):
+    def __init__(self, client_id, client_secret, callback_url,
+                 auth_code=None, access_token=None,
+                 refresh_token=None, expires_at=None,
+                 token_updater_cb=None):
 
         self.client = WithingsOath2Client(client_id, client_secret, callback_url, 
                                           auth_code, access_token, 
-                                          refresh_token, expires_at)
+                                          refresh_token, expires_at,
+                                          token_updater_cb)
 
 
         # TODO: deprecate this
@@ -151,6 +199,25 @@ class Withings:
 
 
     def get_devices(self):
+        """
+        {'body': {'devices': [{'battery': 'high',
+                       'deviceid': '...',
+                       'hash_deviceid': '...',
+                       'last_session_date': ...,
+                       'model': 'Aura Sensor V2',
+                       'model_id': 63,
+                       'timezone': 'America/Chicago',
+                       'type': 'Sleep Monitor'},
+                      {'battery': 'medium',
+                       'deviceid': '...',
+                       'hash_deviceid': '...',
+                       'last_session_date': ...,
+                       'model': 'Body+',
+                       'model_id': 5,
+                       'timezone': 'America/Chicago',
+                       'type': 'Scale'}]},
+        'status': 0}
+        """
 
         parms = { "action": "getdevice" }
 
@@ -194,11 +261,9 @@ class Withings:
         # Replace type-codes with type-names
         for record in measurements['body']['measuregrps']:
             for measure in record['measures']:
-                # print(measure['type'])
                 measure['type'] = MeasureType(measure['type']).value
                 # 'algo', 'fm', 'type', 'unit', 'value'
 
-        # pprint(measurements['body']['measuregrps'][0])
         return measurements['body']['measuregrps']
 
 
@@ -227,6 +292,7 @@ class Withings:
         if 'body' not in results and 'series' not in results['body']:
             print('ERROR:','No body/series in results.')
             pprint(response.text)
+            # '{"status":601,"body":{"wait_seconds":68},"error":"Too Many Requests"}'
             return []
 
         for sleep in results['body']['series']:

@@ -1,6 +1,6 @@
 from enum import Enum
 
-
+# TODO: Probably move this class into structures.py
 class ApiCodeEnum(Enum):
     '''Case-insensitive; unique; auto indexed; reversible'''
 

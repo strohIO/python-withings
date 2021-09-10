@@ -1,4 +1,6 @@
 
+from json.decoder import JSONDecodeError
+from pprint import pprint
 import requests
 import threading
 import urllib
@@ -19,6 +21,9 @@ def get_url_params(url_path):
     return { k:v[0] for k,v in parsed_parms.items() }
 
 
+# TODO: add exceptions from responses
+# oauthlib.oauth2.rfc6749.errors
+#   InvalidScopeError
 
 class WithingsAUTH:
 
@@ -119,7 +124,7 @@ class WithingsAUTH:
 
         try:
             result = response.json()
-        except json.decoder.JSONDecodeError as e:
+        except JSONDecodeError as e:
             print(response.text)
             raise
 
