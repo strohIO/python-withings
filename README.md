@@ -1,4 +1,3 @@
-
 # python-withings
 
 Withings API Python Client Implementation
@@ -7,8 +6,8 @@ Withings API Python Client Implementation
 
 ## Requirements
 
-*  `requests-oauthlib`_ (always)
-.. _requests-oauthlib: https://pypi.python.org/pypi/requests-oauthlib
+* `python-dateutil`: https://pypi.org/project/python-dateutil/1.4/
+* `requests-oauthlib`: https://pypi.python.org/pypi/requests-oauthlib
 
 
 ## Usage
