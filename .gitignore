@@ -6,3 +6,4 @@ tests/*
 
 *.conf
 workspace.py
+index.html*

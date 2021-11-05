@@ -3,9 +3,8 @@ from datetime import datetime
 from datetime import timedelta
 from functools import partialmethod
 import json
+import logging
 from math import floor
-from pprint import pprint
-import sys
 from threading import Event
 from threading import Lock
 
@@ -85,18 +84,16 @@ class WithingsOath2Client:
         '''
 
         if not self.refresh_lock.acquire(blocking=False):
-            print("WAITING ON ANOTHER THREAD TO REFRESH ACCESS TOKEN.")
+            logging.info("WAITING ON ANOTHER THREAD TO REFRESH ACCESS TOKEN.")
             self.refresh_event.wait()
             return
         # self.refresh_event.clear()
-
-        print("FETCHING ACCESS TICKET")
 
         try:
             fetch_token_url = 'https://account.withings.com/oauth2/token'
 
             if not refresh:
-                print("FETCHING ACCESS TICKET")
+                logging.info("FETCHING ACCESS TICKET")
 
                 response = self.session.fetch_token(fetch_token_url,
                                                     include_client_id=True,
@@ -110,12 +107,12 @@ class WithingsOath2Client:
                 # the string of latest access token.
 
             else:
-                print("REFRESHING ACCESS TICKET")
+                logging.info("REFRESHING ACCESS TICKET")
                 response = self.session.refresh_token(fetch_token_url)
 
             # Call token_updater callback function to save off new creds
             if self._token_updater:
-                print("Handling new creds with token_updater callback")
+                logging.debug("Handling new creds with token_updater callback")
                 self._token_updater(response)
 
             # Take in new auth details
@@ -123,12 +120,11 @@ class WithingsOath2Client:
             self.refresh_token = response['refresh_token']
             self.expires_at= floor(response['expires_at'])
             
-            print("TOKEN AUTHENTICATED")
+            logging.info("TOKEN AUTHENTICATED")
 
         except MissingTokenError as err:
             # Does this still happen?
-            pprint("MissingTokenError raised.")
-            print(err)
+            logging.error("MissingTokenError raised.")
             raise
 
         finally:
@@ -143,13 +139,13 @@ class WithingsOath2Client:
     def _request(self, method, url, **kwargs):
 
         if not self.session.token:
-            print("NO TOKEN YET")
+            logging.debug("NO TOKEN YET")
             self.fetch_access_token()
 
         # if not self.expires_at:# and self.expires_at - datetime.now() < 0:
         if self.expires_at \
                 and datetime.fromtimestamp(self.expires_at) < datetime.now():
-            print("Withings API token has expired")
+            logging.debug("Withings API token has expired")
             self.fetch_access_token(refresh=True)
 
         try:
@@ -228,8 +224,8 @@ class Withings:
         results = response.json()
 
         if 'body' not in response and 'devices' not in results['body']:
-            print('ERROR:','No body/devices in results.')
-            pprint(response.text)
+            logging.error('ERROR:','No body/devices in results.')
+            logging.error(response.text)
             return []
 
         return results['body']['devices']
@@ -283,15 +279,15 @@ class Withings:
             #"data_fields": 'hr,rr,snoring',
         }
 
-        print('Fetching data between {} and {}'.format(start_date.date(), end_date.date()))
+        logging.debug('Fetching data between {} and {}'.format(start_date.date(), end_date.date()))
 
         response = self.client.get('https://wbsapi.withings.net/v2/sleep', params=parms)
         
         results = response.json()
         
         if 'body' not in results and 'series' not in results['body']:
-            print('ERROR:','No body/series in results.')
-            pprint(response.text)
+            logging.error('ERROR:','No body/series in results.')
+            logging.error(response.text)
             # '{"status":601,"body":{"wait_seconds":68},"error":"Too Many Requests"}'
             return []
 
@@ -333,8 +329,8 @@ class Withings:
         results = response.json()
         
         # if 'series' not in results['body']:
-        #     print('ERROR:','No body/series in results.')
-        #     pprint(response.text)
+        #     logging.error('ERROR:','No body/series in results.')
+        #     logging.error(response.text)
         #     return []
 
         return results['body']['series'], response.json()['body']['more']

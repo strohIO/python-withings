@@ -1,9 +1,7 @@
 
 import json
-from pprint import pprint
-import sys
+import logging
 import requests
-# from requests.models import Response
 
 from .status_codes import codes as withings_codes
 
@@ -60,11 +58,11 @@ def raise_for_status(response):
 
         try:
             response = json.loads(response.content.decode('utf8'))
-            # pprint(response)
+            # logging.info(response)
             status = response['status']
         except ValueError:
-            print("Returned content isn't JSON format.")
-            pprint(response.__dict__)
+            logging.error("Returned content isn't JSON format.")
+            logging.error(response.__dict__)
             raise
     else:
         status = int(response.status_code)

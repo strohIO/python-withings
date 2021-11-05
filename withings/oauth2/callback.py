@@ -1,7 +1,7 @@
-
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
-import sys
+import logging
 import threading
 import urllib
 
@@ -38,7 +38,7 @@ class CallbackRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
 
-        print("SERVER POSTED TO KILL.")
+        logging.warning("SERVER POSTED TO KILL.")
         self.send_response(200)
         self.send_header('Content-type', 'text/json')
         self.end_headers()
@@ -48,15 +48,16 @@ class CallbackRequestHandler(BaseHTTPRequestHandler):
 
 
 class Oath2CallbackServer(threading.Thread):
-    def __init__(self, event=None, port=8080):
+    def __init__(self, event=None, address='', port=8080):
         threading.Thread.__init__(self)
         self.event = event
-        self.port = port
+        self.address=address
+        self.port = int(port)
 
     def run(self):
-        print("Starting httpd...\n") # log.INFO
+        logging.debug("Starting httpd...\n") # log.INFO
 
-        server_address = ('', self.port)
+        server_address = (self.address, self.port)
         httpd = HTTPServer(server_address, CallbackRequestHandler)
 
         if self.event: self.event.set()
@@ -64,34 +65,38 @@ class Oath2CallbackServer(threading.Thread):
         try:
             # handles incoming request once
             httpd.handle_request()
-            print("REQUEST HANDLED") # log.INFO
+            logging.debug("REQUEST HANDLED") # log.INFO
         except KeyboardInterrupt:
             pass
         finally:
             httpd.server_close()
-            print("Stopping httpd...\n") # log.INFO
+            logging.debug("Stopping httpd...\n") # log.INFO
 
 
 
+@contextmanager
+def local_callback_server(callback_url):
 
-if __name__ == "__main__":
+    import requests
+    import threading
 
-    # mutex = threading.Lock()
+    # Grab the port of the callback_url
+    # server_address = re.split(r'(.+):(.+)[/]', callback_url)
+    # port = server_address[2]
+
+    logging.debug('Start callback server') # log.INFO
+
     evt = threading.Event()
-
-    # ocs = Oath2CallbackServer(mutex)
-    ocs = Oath2CallbackServer(evt)
-    ocs.start()
-    
-    # Wait until CallbackServer has been hit and handles the request
+    callback_handler = Oath2CallbackServer(evt)#, port=port)
+    callback_handler.start()
+    # Wait until the server is loaded up before kicking off the callback api
     evt.wait()
-
-    print("Authorization started.")
-
-    ocs.join()
-    print("Authorization complete.")
-
-
-    # To test with:
-    # $ python -m withings.oath2 &
-    # $ wget -q -O - 'http://localhost:8080?code=WAP'
+    
+    try:
+        yield
+    except:
+        # Tell the Oath2CallbackServer to quit.
+        requests.post(callback_url)
+        raise
+    finally:
+        callback_handler.join()

@@ -1,13 +1,19 @@
-
 from json.decoder import JSONDecodeError
-from pprint import pprint
+import logging
+import re
 import requests
-import threading
 import urllib
 
-from .callback import Oath2CallbackServer
+from .callback import local_callback_server
 from .parser import CSRFParser
+from .parser import UserParser
 
+
+
+def get_url_host(url_path):
+    parsed_uri = urllib.parse.urlparse(url_path)
+    host = parsed_uri.netloc
+    return host
 
 
 def get_url_params(url_path):
@@ -27,7 +33,7 @@ def get_url_params(url_path):
 
 class WithingsAUTH:
 
-    def __init__(self, client_id, callback_url):
+    def __init__(self, client_id, callback_url, state='ABCDEFG'):
 
         self._session = requests.Session()
 
@@ -43,7 +49,7 @@ class WithingsAUTH:
         self.parms = {
             'response_type': 'code',
             'client_id': client_id,
-            'state': "HAHAHA",
+            'state': state,
             # Scale - user.metrics
             # Sleep - user.activity
             'scope': 'user.info,user.metrics,user.activity',
@@ -56,26 +62,41 @@ class WithingsAUTH:
 
         if data:
             payload = urllib.parse.urlencode(data)
-        
-        response = self._session.request(method=verb,
-                                         url="https://account.withings.com/oauth2_user/{}".format(route),
-                                         params=urllib.parse.urlencode(self.parms),
-                                         headers=self.headers,
-                                         data=data,
-                                         **kwargs)
+
+        response = self._session.request(
+            method=verb,
+            url="https://account.withings.com/oauth2_user/{}".format(route),
+            params=urllib.parse.urlencode(self.parms),
+            headers=self.headers,
+            data=data,
+            **kwargs)
 
         return response
 
 
-    def _get_csrf_token(self, **kwargs):
+    def _get_csrf_token(self, username=None, **kwargs):
 
         response = self._call('get', 'account_login', **kwargs)
 
+        # Get ending route of url to check where we're at
+        route = re.search(r'\/([\w_]+)\?', response.url).groups()[0]
+
+        # if there are multiple users in this account, there will be a
+        # select-user page interjected here. Use the provided username to
+        # get the appropriate user_id value
+        if route == 'user_select':
+            user_parser = UserParser(username)
+            user_parser.feed(response.text)
+            user_id = user_parser.get_user_id()
+            self.parms['selecteduser'] = user_id
+            response = self._call('get', 'account_login')
+            logging.debug('User {} selected'.format(username))
+
         # if routed response comes up with 'selecteduser' param, save value
-        if 'selecteduser' in response.url:
+        elif 'selecteduser' in response.url:
             query = get_url_params(response.url)
             self.parms['selecteduser'] = query['selecteduser']
-            print('selecteduser acquired.')
+            logging.debug('selecteduser acquired.')
 
         # Extract csrf_token value from html element
         parser = CSRFParser()
@@ -83,19 +104,19 @@ class WithingsAUTH:
         csrf_token = parser.get_secret()
 
         if not csrf_token:
-            pprint(response.text)
+            logging.error(response.text)
             raise Exception("No CSRF Token element found on HTML page.")
 
-        print('CSRF_TOKEN acquired.')
+        logging.debug('CSRF_TOKEN acquired.')
 
         return csrf_token
 
 
-    def _sign_in(self, csrf_token: str, user_email, password):
+    def _sign_in(self, csrf_token: str, account_email, account_password):
         
         body = {
-            'email': user_email,
-            'password': password,
+            'email': account_email,
+            'password': account_password,
             'is_admin': 'f',
             'csrf_token': csrf_token,
         }
@@ -104,69 +125,75 @@ class WithingsAUTH:
 
         # check response.status_code for failed logins
         if 'session_key' not in self._session.cookies:
-            print(response.url)
+            logging.debug(response.url)
             raise Exception("""Sign-in error: no session_key provided. 
                 Was there already too many failed attempts?""")
 
-        print('SESSION_KEY Cookie acquired')
+        logging.debug('SESSION_KEY Cookie acquired')
 
         return self._session.cookies['session_key']
 
 
-    def _authorize(self, csrf_token):
+    def _authorize(self, csrf_token, **kwargs):
+        """
+        For API Keys and such, it's recommended to pass 'auth' into kwargs as a requests auth object,
+        rather than replacing headers.
+        """
 
         body = {
             'authorized': 1,
             'csrf_token': csrf_token,
         }
 
-        response = self._call("post", "authorize2", body)
+        # Interject updating headers in-between redirect to ensure proper headers are sent to callback server
+        first_response = self._call("post", "authorize2", data=body, allow_redirects=False, **kwargs)
+        redirect_request = first_response._next
+        # Withings leaves this as their own 'account.withings.com', potentially breaking the redirect with AWS
+        # redirect_request.headers['Host'] = '*.execute-api.*.amazonaws.com'
+        redirect_request.headers['Host'] = get_url_host(self.callback_url)
+
+        response = self._session.send(redirect_request)
 
         try:
-            result = response.json()
+            if response.status_code == 403:
+                logging.error(response.__dict__)
+                raise Exception('403 Response Status')
+            else:
+                result = response.json()
+                code = result['code']
         except JSONDecodeError as e:
-            print(response.text)
+            logging.error(response.text)
             raise
 
-        print('Authorization Code acquired')
+        logging.debug('Authorization Code acquired: {}'.format(response.json()))
 
-        return result['code']
+        return code
         #except (ConnectionResetError, ProtocolError, requests.exceptions.ConnectionError):
 
 
-    def authorize(self, user_email, password):
+    def authorize(self, account_email, account_password, username=None, callback_server_gen=local_callback_server, **kwargs):
+        '''username may not be necessary, if there is only a single user in the account.'''
 
         # GET:  grab csrf_token from a hidden element in the html on the ACCOUNT_LOGIN page
         csrf_token = self._get_csrf_token()
 
         # POST: attach that csrf to body along with creds to post to basically that same URL
-        self._sign_in(csrf_token, user_email, password)
+        self._sign_in(csrf_token, account_email, account_password)
+
+        logging.debug("SESSION KEY: {}".format(self._session.cookies['session_key']))
 
         # GET: grab new csrf_token, but with the session_id cookie included from the previous call
         #       to be taken to the 'Allow this app?' page
-        new_csrf_token = self._get_csrf_token()
+        # Also grabs the selecteduser ID
+        new_csrf_token = self._get_csrf_token(username)
 
-        # Start up server in background to listen for callback request containing the authorization code
-        #  which is then forwarded back to the caller.
-        evt = threading.Event()
-        callback_handler = Oath2CallbackServer(evt)
-        callback_handler.start()
-        # Wait until the server is loaded up before kicking off the callback api
-        evt.wait()
+        with callback_server_gen(self.callback_url):
+            # Request Authorization Code. Pulls from own server after redirect.
+            # Posts to the AUTHORIZE2 page, which forwards to the encompassing CallbackServer, with a 'code' query 
+            # parameter, which the CallbackServer reads and returns back to this authorize response.
+            code = self._authorize(new_csrf_token, **kwargs)
 
-        # Request Authorization Code. Pulls from own server after redirect.
-        #  Posts to the AUTHORIZE2 page, which forwards to the above CallbackServer, with a 'code' query 
-        #  parameter, which the CallbackServer reads and returns back to this authorize response.
-        try:
-            code = self._authorize(new_csrf_token)
-        except:
-            # Tell the CallbackServer to quit.
-            requests.post(self.callback_url)
-            raise
-
-        # Ensure server finishes before proceeding
-        callback_handler.join()
-        print("Authorization complete.") # log.INFO
+        logging.debug("Authorization complete.") # log.INFO
 
         # This authorization code is passed to the API to get the access token & refresh token.
         return code

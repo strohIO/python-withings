@@ -1,4 +1,5 @@
 from enum import Enum
+import numbers
 
 # TODO: Probably move this class into structures.py
 class ApiCodeEnum(Enum):
@@ -61,6 +62,13 @@ class ApiCodeEnum(Enum):
     def __int__(self):
         return self.code
 
+    def __eq__(self, other):
+        
+        if isinstance(other, numbers.Real):
+            return self.code == other
+        else:
+            return self.value == other
+
 
 
 class MeasureType(ApiCodeEnum):
@@ -84,10 +92,10 @@ class MeasureType(ApiCodeEnum):
 
 
 class SleepState(ApiCodeEnum):
-    AWAKE = 'awake'
-    LIGHT = 'light'
-    DEEP = 'deep'
-    REM = 'rem'
+    AWAKE = 'awake'    # 0
+    LIGHT = 'light'    # 1
+    DEEP = 'deep'      # 2
+    REM = 'rem'        # 3
 
 
 

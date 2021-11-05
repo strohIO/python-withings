@@ -1,9 +1,5 @@
 
-
-from pprint import pprint
 from requests import codes
-
-
 
 
 class LookupDict(dict):
@@ -79,8 +75,3 @@ def add_to_results(key, value):
         results[key] = [value,]
     else:
         results[key].append(value)
-
-if __name__ == '__main__':
-    pprint(codes.__dict__)
-
-
