@@ -14,7 +14,7 @@ VERSION = re.search(version_regex, text).group(1)
 
 setup(
     name="python-withings",
-    version="1.0.0",
+    version=VERSION,
     description="Wrapper package for Withings API",
     long_description_content_type="text/markdown",
     long_description=README,

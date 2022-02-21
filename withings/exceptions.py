@@ -3,14 +3,36 @@ import json
 import logging
 import requests
 
+from oauthlib.oauth2 import MismatchingRedirectURIError
+
 from .status_codes import codes as withings_codes
 
+
+# Authorizer Exceptions
+
+class MismatchingRedirectURIError(MismatchingRedirectURIError):
+    def __init__(self, redirect_uri=None,
+                 description=None, uri=None, state=None,
+                 status_code=None, request=None):
+
+        self.redirect_uri = redirect_uri
+
+        if redirect_uri:
+            self.description = "CSRF Warning! The redirect URI provided ({}) is missing or does not match partner callback url." \
+                .format(redirect_uri)
+        else:
+            self.description = "CSRF Warning! The redirect URI provided is missing or does not match partner callback url."
+
+        super().__init__(description=None, uri=None, state=None,
+            status_code=None, request=None)
+
+
+# Client Exceptions
 
 class StatusException(Exception):
     def __init__(self, status_code, error, *args, **kwargs):
         message = '({}) {}'.format(status_code, error)
-        super().__init__(message, 
-        *args, **kwargs)
+        super().__init__(message, *args, **kwargs)
 
 
 class AuthenticationFailedException(StatusException):

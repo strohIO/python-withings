@@ -5,6 +5,7 @@ import requests
 import urllib
 
 from .callback import local_callback_server
+from ..exceptions import MismatchingRedirectURIError
 from .parser import CSRFParser
 from .parser import UserParser
 
@@ -104,8 +105,13 @@ class WithingsAUTH:
         csrf_token = parser.get_secret()
 
         if not csrf_token:
-            logging.error(response.text)
-            raise Exception("No CSRF Token element found on HTML page.")
+            resp = response.json()
+
+            if 'redirect_uri_mismatch' in resp['errors'][0]['message']:
+                raise MismatchingRedirectURIError(self.callback_url)
+            else:
+                logging.error(resp)
+                raise Exception("No CSRF Token element found on HTML page.")
 
         logging.debug('CSRF_TOKEN acquired.')
 
@@ -156,7 +162,8 @@ class WithingsAUTH:
 
         try:
             if response.status_code == 403:
-                logging.error(response.__dict__)
+                from pprint import pprint
+                pprint(response.__dict__)
                 raise Exception('403 Response Status')
             else:
                 result = response.json()

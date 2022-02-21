@@ -10,12 +10,42 @@ from threading import Lock
 
 from dateutil.parser import parse
 from oauthlib.oauth2.rfc6749.errors import MissingTokenError
+from requests import Response
 from requests_oauthlib import OAuth2Session
 
 from .codes import MeasureType, SleepState
 from .exceptions import AuthenticationFailedException
 from .exceptions import raise_for_status as withings_raise_for_status
 
+
+
+def restructure_token(response: Response):
+    """
+    Withings returns token contents in 'body' of json dict.
+    Pull those contents out to the first level of a token dict.
+    """
+
+    try:
+        resp = response.json()
+    except json.decoder.JSONDecodeError as e:
+        logging.error(response.text)
+        raise
+        # alternatively, the unmodified response could be returned here
+
+    new_token = {}
+
+    status = resp.get('status', None)
+    if status:
+        # If no error, status was set to 0 and this block won't run
+        new_token['error'] = status
+
+    body = resp.get('body', None)
+    if body:
+        new_token.update(body)
+
+    response._content = json.dumps(new_token).encode("UTF-8")
+
+    return response
 
 
 class WithingsOath2Client:
@@ -53,7 +83,7 @@ class WithingsOath2Client:
         except TypeError as err:
             self.expires_at = expires_at
 
-        self._token_updater = token_updater or (lambda self,x: x)
+        self._token_updater = token_updater or (lambda x: x)
 
         token = {}
         if access_token: token['access_token'] = access_token
@@ -64,7 +94,7 @@ class WithingsOath2Client:
         self.refresh_event = Event()
 
         self.session = OAuth2Session(client_id=self.client_id,
-                                     auto_refresh_url='https://account.withings.com/oauth2/token',
+                                     auto_refresh_url='https://wbsapi.withings.net/v2/oauth2',
                                      auto_refresh_kwargs={
                                          "action": "requesttoken",
                                          "client_id": self.client_id,
@@ -74,6 +104,10 @@ class WithingsOath2Client:
                                      redirect_uri=self.callback_url,
                                      scope='user.info,user.metrics,user.activity',
                                      token_updater=self._token_updater)
+
+        # Hooks to restructure token dict upon access & refresh of session tokens
+        self.session.register_compliance_hook("access_token_response", restructure_token)
+        self.session.register_compliance_hook("refresh_token_response", restructure_token)
 
 
     def fetch_access_token(self, refresh=False):
@@ -90,7 +124,7 @@ class WithingsOath2Client:
         # self.refresh_event.clear()
 
         try:
-            fetch_token_url = 'https://account.withings.com/oauth2/token'
+            fetch_token_url = 'https://wbsapi.withings.net/v2/oauth2'
 
             if not refresh:
                 logging.info("FETCHING ACCESS TICKET")
@@ -123,7 +157,8 @@ class WithingsOath2Client:
             logging.info("TOKEN AUTHENTICATED")
 
         except MissingTokenError as err:
-            # Does this still happen?
+            # Probably ALWAYS means there wasn't an Access Token returned in the response
+            # due to some issue in the provided parameters of the request
             logging.error("MissingTokenError raised.")
             raise
 
@@ -334,3 +369,28 @@ class Withings:
         #     return []
 
         return results['body']['series'], response.json()['body']['more']
+
+
+    def subscribe(self, callback_url, noti_category):
+
+        response = self.client.post(
+            'https://wbsapi.withings.net/notify',
+            params={
+                'action': 'subscribe',
+                'callbackurl': callback_url,
+                'appli': noti_category,
+            })
+
+        return response
+
+    def unsubscribe(self, callback_url, noti_category):
+
+        response = self.client.post(
+            'https://wbsapi.withings.net/notify',
+            params={
+                'action': 'revoke',
+                'callbackurl': callback_url,
+                'appli': noti_category,
+            })
+
+        return response
