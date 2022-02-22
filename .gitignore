@@ -7,3 +7,7 @@ tests/*
 *.conf
 workspace.py
 index.html*
+
+build/
+dist/
+*egg-info/

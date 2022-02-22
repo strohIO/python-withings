@@ -48,6 +48,13 @@ def restructure_token(response: Response):
     return response
 
 
+def restructure_request_pquery(request):
+    print(type(request))
+    import sys
+    sys.exit(0)
+
+
+
 class WithingsOath2Client:
     '''
     access_token is valid for three hours.
@@ -142,7 +149,24 @@ class WithingsOath2Client:
 
             else:
                 logging.info("REFRESHING ACCESS TICKET")
-                response = self.session.refresh_token(fetch_token_url)
+                # response = self.session.refresh_token(fetch_token_url)
+
+                # Temporary workaround until request compliance-hooks are available
+                refresh_token = self.session.token['refresh_token']
+                body = f"action=requesttoken&grant_type=refresh_token&client_id={self.client_id}&client_secret={self.client_secret}&refresh_token={refresh_token}"
+                response = self.session.post(
+                    fetch_token_url,
+                    data=body,
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": ("application/x-www-form-urlencoded;charset=UTF-8"),
+                    },
+                    verify=True,
+                    withhold_token=True,
+                )
+                response = restructure_token(response)
+                response = self.session._client.parse_request_body_response(response.text)
+
 
             # Call token_updater callback function to save off new creds
             if self._token_updater:
