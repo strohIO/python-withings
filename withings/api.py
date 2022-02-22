@@ -55,6 +55,21 @@ def restructure_request_pquery(request):
 
 
 
+def prepare_refresh_body(self, body='', refresh_token=None, scope=None, **kwargs):
+    """
+    Temporary workaround function attached to oauthlib session until `access_token_request`
+    compliance_hook is implemented in a tagged branch of requests_oauthlib.
+    Scope is excluded in this version, as the Withings API returns `503 - Invalid Params`
+    when included.
+    """
+    from oauthlib.oauth2.rfc6749.parameters import prepare_token_request
+    refresh_token = refresh_token or self.refresh_token
+    #scope = self.scope if scope is None else scope
+    return prepare_token_request(self.refresh_token_key, body=body, #scope=scope,
+                                    refresh_token=refresh_token, **kwargs)
+
+
+
 class WithingsOath2Client:
     '''
     access_token is valid for three hours.
@@ -116,6 +131,8 @@ class WithingsOath2Client:
         self.session.register_compliance_hook("access_token_response", restructure_token)
         self.session.register_compliance_hook("refresh_token_response", restructure_token)
 
+        self.session._client.prepare_refresh_body = (lambda *args, **kwargs: prepare_refresh_body(self.session._client, *args, **kwargs))
+
 
     def fetch_access_token(self, refresh=False):
         '''After this point, the contents of the response dict are saved in session
@@ -149,24 +166,7 @@ class WithingsOath2Client:
 
             else:
                 logging.info("REFRESHING ACCESS TICKET")
-                # response = self.session.refresh_token(fetch_token_url)
-
-                # Temporary workaround until request compliance-hooks are available
-                refresh_token = self.session.token['refresh_token']
-                body = f"action=requesttoken&grant_type=refresh_token&client_id={self.client_id}&client_secret={self.client_secret}&refresh_token={refresh_token}"
-                response = self.session.post(
-                    fetch_token_url,
-                    data=body,
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": ("application/x-www-form-urlencoded;charset=UTF-8"),
-                    },
-                    verify=True,
-                    withhold_token=True,
-                )
-                response = restructure_token(response)
-                response = self.session._client.parse_request_body_response(response.text)
-
+                response = self.session.refresh_token(fetch_token_url)
 
             # Call token_updater callback function to save off new creds
             if self._token_updater:
